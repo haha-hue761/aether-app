@@ -16,6 +16,21 @@ enum P2PTransportMode {
   airGappedQr,
 }
 
+/// Структура чанка файла для докачки с проверкой SHA-256
+class FileChunkFrame {
+  final int chunkIndex;
+  final int totalChunks;
+  final String sha256Hex;
+  final String payloadBase64;
+
+  FileChunkFrame({
+    required this.chunkIndex,
+    required this.totalChunks,
+    required this.sha256Hex,
+    required this.payloadBase64,
+  });
+}
+
 class P2PService extends ChangeNotifier {
   final CryptoService cryptoService;
 
@@ -34,15 +49,14 @@ class P2PService extends ChangeNotifier {
   final List<RTCIceCandidate> _localCandidates = [];
   Timer? _dummyTrafficTimer;
 
-  // Коллбэки для доставки входящих E2EE пакетов и Remote Wipe сигналов в UI
-  void Function(EncryptedRatchetPacket packet, String plainText)? onMessageReceived;
+  void Function(EncryptedRatchetPacket packet, String plainText)?
+      onMessageReceived;
   void Function(String remotePeerId)? onRemoteWipeTriggered;
 
   P2PService({required this.cryptoService}) {
     _startTrafficPaddingEngine();
   }
 
-  /// Конфигурация STUN только для пробития NAT (без центральных TURN/сигнальных серверов)
   final Map<String, dynamic> _rtcConfig = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
@@ -51,7 +65,7 @@ class P2PService extends ChangeNotifier {
     'sdpSemantics': 'unified-plan',
   };
 
-  /// Генерация бессерверного SDP-оффера (упаковывается в единый Base64-токен для обмена)
+  /// Генерация бессерверного SDP-оффера (Base64-токен для обмена)
   Future<String> createServerlessOfferToken() async {
     await _disposeCurrentPeerConnection();
     _localCandidates.clear();
@@ -72,7 +86,6 @@ class P2PService extends ChangeNotifier {
     });
     await _peerConnection!.setLocalDescription(offer);
 
-    // Ожидание сбора ICE-кандидатов для упаковки в единый бессерверный токен
     await Future.delayed(const Duration(milliseconds: 900));
 
     final bundle = {
@@ -97,8 +110,9 @@ class P2PService extends ChangeNotifier {
     await _disposeCurrentPeerConnection();
     _localCandidates.clear();
 
-    final decoded = jsonDecode(utf8.decode(base64Url.decode(remoteToken.trim())))
-        as Map<String, dynamic>;
+    final decoded =
+        jsonDecode(utf8.decode(base64Url.decode(remoteToken.trim())))
+            as Map<String, dynamic>;
 
     _peerConnection = await createPeerConnection(_rtcConfig);
     _registerPeerCallbacks();
@@ -148,8 +162,9 @@ class P2PService extends ChangeNotifier {
   /// Завершение рукопожатия на стороне инициатора после ввода Answer-токена
   Future<void> completeServerlessHandshake(String answerToken) async {
     if (_peerConnection == null) return;
-    final decoded = jsonDecode(utf8.decode(base64Url.decode(answerToken.trim())))
-        as Map<String, dynamic>;
+    final decoded =
+        jsonDecode(utf8.decode(base64Url.decode(answerToken.trim())))
+            as Map<String, dynamic>;
 
     await _peerConnection!.setRemoteDescription(
       RTCSessionDescription(decoded['sdp'] as String, 'answer'),
@@ -193,7 +208,6 @@ class P2PService extends ChangeNotifier {
       if (msg.isBinary) return;
       try {
         final map = jsonDecode(msg.text) as Map<String, dynamic>;
-        // Игнорируем шумовые dummy-пакеты
         if (map['type'] == 'DUMMY_NOISE') return;
 
         final packet = EncryptedRatchetPacket.fromJson(map);
@@ -252,13 +266,13 @@ class P2PService extends ChangeNotifier {
   }
 
   /// Чанковая нарезка файла (64 КБ) с вычислением SHA-256 для докачки при обрыве
-  Future<List>> buildResumableFileChunks(
+  Future<List<FileChunkFrame>> buildResumableFileChunks(
     Uint8List fileBytes, {
     int startChunkIndex = 0,
   }) async {
     const chunkSize = 65536;
     final totalChunks = (fileBytes.length + chunkSize - 1) ~/ chunkSize;
-    final chunks = >[];
+    final List<FileChunkFrame> chunks = [];
 
     for (int i = startChunkIndex; i < totalChunks; i++) {
       final start = i * chunkSize;
@@ -266,23 +280,26 @@ class P2PService extends ChangeNotifier {
       final slice = fileBytes.sublist(start, end);
       final digest = await Sha256().hash(slice);
 
-      chunks.add({
-        'chunkIndex': i,
-        'totalChunks': totalChunks,
-        'sha256': hex.encode(digest.bytes),
-        'payloadBase64': base64Encode(slice),
-      });
+      chunks.add(
+        FileChunkFrame(
+          chunkIndex: i,
+          totalChunks: totalChunks,
+          sha256Hex: hex.encode(digest.bytes),
+          payloadBase64: base64Encode(slice),
+        ),
+      );
     }
     return chunks;
   }
 
   /// Стеганография «на лету»: внедрение зашифрованного текста в контейнер изображения
-  String embedSteganographyPayload(String coverImageLabel, String secretCipher) {
+  String embedSteganographyPayload(
+      String coverImageLabel, String secretCipher) {
     final encoded = base64Encode(utf8.encode(secretCipher));
     return '🖼️ [STEGO-PNG: $coverImageLabel | LSB-Container: ${encoded.substring(0, min(20, encoded.length))}... (Скрыто ${secretCipher.length} байт E2EE)]';
   }
 
-  /// Запуск P2P аудио/видео потока или кружочка 1:1 с защитой биометрии голоса
+  /// Запуск P2P аудио/видео потока или кружочка 1:1
   Future<bool> startEncryptedMediaStream({required bool videoCircle}) async {
     try {
       _localAudioVideoStream = await navigator.mediaDevices.getUserMedia({
