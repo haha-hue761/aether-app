@@ -32,8 +32,8 @@ class EncryptedRatchetPacket {
   final String senderPeerId;
   final String ephemeralPublicKeyHex;
   final int messageIndex;
-  final int utcTimestamp; // Принудительно нормализован к UTC+0
-  final int ttlSeconds; // Burn-on-Read таймер
+  final int utcTimestamp;
+  final int ttlSeconds;
   final bool isRemoteWipeTrigger;
   final String nonceHex;
   final String cipherTextHex;
@@ -85,19 +85,17 @@ class EncryptedRatchetPacket {
 class CryptoService extends ChangeNotifier {
   final Ed25519 _ed25519 = Ed25519();
   final X25519 _x25519 = X25519();
-  final ChaCha20 _aead = ChaCha20.poly1305Aead();
+  final Chacha20 _aead = Chacha20.poly1305Aead();
   final Hkdf _hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
 
   String _mnemonic = '';
   SimpleKeyPair? _ed25519IdentityKey;
   SimpleKeyPair? _x25519IdentityKey;
-  SimpleKeyPair? _x25519SignedPreKey;
 
   String _peerIdOnion = '';
   String _displayName = 'Ghost_Node';
   String _username = '@anon_cipher';
 
-  // Изолированные сессии Double Ratchet по каждому Peer ID
   final Map<String, DoubleRatchetSession> _sessions = {};
 
   String get mnemonic => _mnemonic;
@@ -110,7 +108,6 @@ class CryptoService extends ChangeNotifier {
     _mnemonic = customMnemonic ?? bip39.generateMnemonic(strength: 256);
     final seedBytes = bip39.mnemonicToSeed(_mnemonic);
 
-    // Деривация независимых ключей Ed25519 и X25519 из мастер-сида
     final edSeed = await _hkdf.deriveKey(
       secretKey: SecretKey(seedBytes.sublist(0, 32)),
       nonce: utf8.encode('AETHER_ED25519_SIGN'),
@@ -126,7 +123,6 @@ class CryptoService extends ChangeNotifier {
         await _ed25519.newKeyPairFromSeed(await edSeed.extractBytes());
     _x25519IdentityKey =
         await _x25519.newKeyPairFromSeed(await xSeed.extractBytes());
-    _x25519SignedPreKey = await _x25519.newKeyPair();
 
     final pubKey = await _ed25519IdentityKey!.extractPublicKey();
     final hash = await Sha256().hash(pubKey.bytes);
@@ -182,8 +178,10 @@ class CryptoService extends ChangeNotifier {
     final digest = await Sha256().hash(utf8.encode(pair.join(':')));
     final b = digest.bytes;
 
-    final sasEmojis = List.generate(4, (i) => emojis[b[i] % emojis.length]).join(' ');
-    final sasWords = List.generate(3, (i) => words[b[i + 4] % words.length]).join('-');
+    final sasEmojis =
+        List.generate(4, (i) => emojis[b[i] % emojis.length]).join(' ');
+    final sasWords =
+        List.generate(3, (i) => words[b[i + 4] % words.length]).join('-');
     return '$sasEmojis  [$sasWords]';
   }
 
@@ -196,13 +194,13 @@ class CryptoService extends ChangeNotifier {
         final byte = codeUnits[(row * 3 + col) % codeUnits.length];
         final isActive = (byte + row + col) % 2 == 0;
         matrix[row * 5 + col] = isActive;
-        matrix[row * 5 + (4 - col)] = isActive; // Зеркальная симметрия
+        matrix[row * 5 + (4 - col)] = isActive;
       }
     }
     return matrix;
   }
 
-  /// Инициализация сессии X3DH (Extended Triple Diffie-Hellman) + Double Ratchet
+  /// Инициализация сессии X3DH + Double Ratchet
   Future<DoubleRatchetSession> getOrInitRatchetSession(
     String remotePeerId, {
     String? remoteX25519PubHex,
@@ -231,9 +229,9 @@ class CryptoService extends ChangeNotifier {
       final b2 = await dh2.extractBytes();
       sharedSecretBytes = [...b1, ...b2];
     } else {
-      // Детерминированный локальный ключ для P2P-демо до обмена X3DH-бандлами
       final pair = [_peerIdOnion, remotePeerId]..sort();
-      final fallbackHash = await Sha256().hash(utf8.encode(pair.join('#X3DH#')));
+      final fallbackHash =
+          await Sha256().hash(utf8.encode(pair.join('#X3DH#')));
       sharedSecretBytes = fallbackHash.bytes;
     }
 
@@ -289,7 +287,6 @@ class CryptoService extends ChangeNotifier {
       session.receiveMessageNumber += 1;
     }
 
-    // Ротация эфемерной пары ключей DH для Post-Compromise Security
     session.localRatchetKeyPair = await _x25519.newKeyPair();
     return messageKeyMac.bytes;
   }
@@ -381,7 +378,7 @@ class CryptoService extends ChangeNotifier {
     return _removeTrafficPadding(decryptedPadded);
   }
 
-  /// EXIF Scrubber: принудительное вырезание секций APP1 (EXIF/GPS) из JPEG-байтов
+  /// EXIF Scrubber: принудительное вырезание секций APP1..APP15 (EXIF/GPS)
   Uint8List scrubExifMetadata(Uint8List imageBytes) {
     if (imageBytes.length < 4 ||
         imageBytes[0] != 0xFF ||
@@ -393,7 +390,6 @@ class CryptoService extends ChangeNotifier {
     while (i + 3 < imageBytes.length) {
       if (imageBytes[i] == 0xFF) {
         final marker = imageBytes[i + 1];
-        // Секции APP1..APP15 (0xE1..0xEF) содержат EXIF, GPS и XMP метаданные камеры
         if (marker >= 0xE1 && marker <= 0xEF) {
           final segLen = (imageBytes[i + 2] << 8) | imageBytes[i + 3];
           i += 2 + segLen;
@@ -416,7 +412,8 @@ class CryptoService extends ChangeNotifier {
     required String amountXmr,
   }) async {
     final utcIso = DateTime.now().toUtc().toIso8601String();
-    final payload = 'CONTRACT|$utcIso|$_peerIdOnion|$counterpartyPeerId|$amountXmr XMR|$terms';
+    final payload =
+        'CONTRACT|$utcIso|$_peerIdOnion|$counterpartyPeerId|$amountXmr XMR|$terms';
     final hash = await Sha256().hash(utf8.encode(payload));
     final sig = await _ed25519.sign(hash.bytes, keyPair: _ed25519IdentityKey!);
     final sigShort = hex.encode(sig.bytes).substring(0, 24);
