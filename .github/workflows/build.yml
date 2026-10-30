@@ -21,13 +21,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Flutter SDK
+      - name: Setup Flutter SDK (Stable 3.24.5 with full plugin compatibility)
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.24.5'
           channel: 'stable'
           cache: true
 
-      - name: Bootstrap Android Gradle Wrapper (Mobile-First CI Support)
+      - name: Bootstrap Android Gradle Wrapper
         run: |
           mkdir -p /tmp/aether_backup
           cp pubspec.yaml /tmp/aether_backup/
@@ -36,17 +37,15 @@ jobs:
             cp android/app/src/main/AndroidManifest.xml /tmp/aether_backup/
           fi
 
-          # Генерация недостающих файлов Gradle и нативной обвязки Android
           flutter create --project-name aether_p2p --org org.aether.p2p --platforms android .
 
-          # Восстановление пользовательских исходников поверх шаблона
           cp /tmp/aether_backup/pubspec.yaml ./pubspec.yaml
           rm -rf ./lib && cp -r /tmp/aether_backup/lib ./lib
           if [ -f /tmp/aether_backup/AndroidManifest.xml ]; then
             cp /tmp/aether_backup/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           fi
 
-      - name: Configure Android minSdkVersion 24 for WebRTC & SQLCipher
+      - name: Configure Android minSdkVersion 24 & compileSdk 34
         run: |
           if [ -f android/app/build.gradle ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
@@ -58,6 +57,11 @@ jobs:
 
       - name: Install Dependencies
         run: flutter pub get
+
+      - name: Auto-Patch Legacy V1 Registrar in Pub Cache (if present)
+        run: |
+          find ~/.pub-cache -name "FlutterWebRTCPlugin.java" -exec sed -i '/PluginRegistry\.Registrar/d' {} + || true
+          find ~/.pub-cache -name "FlutterWebRTCPlugin.java" -exec sed -i '/registerWith(Registrar/,/^[[:space:]]*}/d' {} + || true
 
       - name: Build Split-per-ABI Release APKs
         run: flutter build apk --release --split-per-abi --no-tree-shake-icons
