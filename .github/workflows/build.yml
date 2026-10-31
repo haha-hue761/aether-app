@@ -21,10 +21,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Flutter SDK (Stable 3.24.5 with full plugin compatibility)
+      - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
           channel: 'stable'
           cache: true
 
@@ -45,8 +44,12 @@ jobs:
             cp /tmp/aether_backup/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           fi
 
-      - name: Configure Android minSdkVersion 24 & compileSdk 34
+      - name: Sanitize AndroidManifest & Set minSdk 24
         run: |
+          # Удаляем устаревший атрибут package="org.aether.p2p" из AndroidManifest.xml (требование AGP 8+)
+          sed -i 's/package="[^"]*"//g' android/app/src/main/AndroidManifest.xml
+
+          # Выставляем minSdk 24 в build.gradle / build.gradle.kts
           if [ -f android/app/build.gradle ]; then
             sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
             sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle
@@ -58,8 +61,10 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Auto-Patch Legacy V1 Registrar in Pub Cache (if present)
+      - name: Auto-Fix Plugin Gradle Compatibility in Pub Cache
         run: |
+          # На случай если плагин ищет android.flutter.compileSdkVersion или старый Registrar
+          find ~/.pub-cache -name "build.gradle" -exec sed -i 's/android.flutter.compileSdkVersion/34/g' {} + || true
           find ~/.pub-cache -name "FlutterWebRTCPlugin.java" -exec sed -i '/PluginRegistry\.Registrar/d' {} + || true
           find ~/.pub-cache -name "FlutterWebRTCPlugin.java" -exec sed -i '/registerWith(Registrar/,/^[[:space:]]*}/d' {} + || true
 
